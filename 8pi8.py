@@ -8,6 +8,7 @@ import smbus
 import pigpio
 import time
 from time import sleep
+import atexit
 
 #run sudo pigpiod in terminal for clock to work
 
@@ -170,6 +171,20 @@ def init():
     bus.write_i2c_block_data(ADCADDR, 0x0b, [0x02, 0x00]) # enable VREF
     bus.write_i2c_block_data(ADCADDR, 0x03, [0x01, 0x00]) # enable ADC buffer
     
+def shutdown():
+    """ 
+    Things to do when exiting the script/gui cleanly (ctrl-D, click on window X)
+    """
+    # Turn off 2.5V, 1.2V that are controlled with header GPIO
+    pi.write(EN_2V5, 0)
+    pi.write(EN_12, 0)
+    # Turn off individual supplies
+    # set expander port 0 all low to disable LDOs
+    bus.write_byte_data(GPIOADDR, 0x02, 0x00)     
+    # assert ARST# to reset ADC, DAC, LED pot
+    bus.write_byte_data(GPIOADDR, 0x03, 0x14) 
+    # stop clock
+    pi.hardware_clock(4, 0)
 
 class PowerSupply:
     """
@@ -475,7 +490,7 @@ PD_submit = tk.Button(tab1, text="Submit", font=fontStyle,
     command=lambda:submit(PD, PD_voltage_entry, PD_text, 0x15,"d"))
 PD_submit.grid(row=6, column=4)
 
-calibrate(PD, 0x820, 0xfff, 2.864, 4.107)
+calibrate(PD, 0x800, 0xfff, 2.757, 4.005)
     
 # INIT BG
 BG = PowerSupply(1.8, False, 0, 0)
@@ -1443,13 +1458,13 @@ def swinit(button):
         sw_bus(IN)
         for sw in sw_addr: bus.write_byte_data(sw, 0x00, 0x00)
         
-        # Initialize output switches
+        # Initialize switches driving SMA outputs, U40-U43
         sw_bus(OUT)
         
         # disable unused outputs
-        unused = [0xc0, 0xc8, 0xd0, 0xe8, 0xf0, 0xf8]
+        unused_outs = [0xc0, 0xc8, 0xd0, 0xe8, 0xf0, 0xf8]
         for sw in sw_addr:
-            for port in unused: bus.write_byte_data(sw, port, 0x00)
+            for port in unused_outs: bus.write_byte_data(sw, port, 0x00)
 
         # invert Rx polarity on lanes 4..7
         for sw in sw_addr:
@@ -1463,18 +1478,18 @@ def swinit(button):
         # Update
         for sw in sw_addr: bus.write_byte_data(sw, 0x41, 0x01)
         
-        # Initialize input switches
+        # Initialize switches receiving SMA inputs, U36-U39
         sw_bus(IN)
         # disable unused receivers
-        unused = [0x80, 0x88, 0x90, 0xa8, 0xb0, 0xb8]
+        unused_ins = [0x80, 0x88, 0x90, 0xa8, 0xb0, 0xb8]
         for sw in sw_addr:
-            for port in unused: bus.write_byte_data(sw, port, 0x00)
-        # OUT0..3 get IN3
+            for port in unused_ins: bus.write_byte_data(sw, port, 0x00)
+        # OUT0..3 all get IN3
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x30)
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x31)
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x32)
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x33)
-        # OUT4..7 get IN4
+        # OUT4..7 all get IN4
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x44)
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x45)
         for sw in sw_addr: bus.write_byte_data(sw, 0x40, 0x46)
@@ -1491,5 +1506,77 @@ def swinit(button):
 swinit_button = tk.Button(tab3, text='Init', command=lambda: swinit(swinit_button))
 swinit_button.grid(row=0, column=5)
 
+def swmap(num, inport, outport):
+    # outputs are 0-3, inputs are 4-7
+    switch_addresses = [0x48, 0x49, 0x4a, 0x4b, 0x48, 0x49, 0x4a, 0x4b]
+
+    r = range(8)
+    if not ((num in r) and (inport in r) and (outport in r)):
+        print("Wrong arguments")
+        return None
+    else:
+        sw = switch_addresses[num]
+        mapdat = (inport << 4) + outport
+        #print(hex(mapdat))
+        if num in range(4):
+            sw_bus(OUT)
+        else:
+            sw_bus(IN)
+
+        bus.write_byte_data(sw, 0x40, mapdat)
+        bus.write_byte_data(sw, 0x41, 0x01)
+
+
+def swdump(num):
+    # outputs are 0-3, inputs are 4-7
+    switch_addresses = [0x48, 0x49, 0x4a, 0x4b, 0x48, 0x49, 0x4a, 0x4b]
+
+    r = range(8)
+    if not (num in r):
+        print("Wrong arguments")
+        return None
+    sw = switch_addresses[num]
+    if num in range(4):
+        sw_bus(OUT)
+    else:
+        sw_bus(IN)
+    dat=[]
+    for reg in range(256):
+        dat.append(bus.read_byte_data(sw, reg))
+    for chunk in range(16):
+        print('0x{:02x}'.format(chunk*16), ':', ' '.join('{:02x} '.format(x) for x in dat[(chunk*16):((chunk+1)*16)]))
+
+def sww(num, reg, dat):
+    # outputs are 0-3, inputs are 4-7
+    switch_addresses = [0x48, 0x49, 0x4a, 0x4b, 0x48, 0x49, 0x4a, 0x4b]
+
+    r = range(8)
+    if not ((num in r) and reg in range(256) and dat in range(256)):
+        print("Wrong arguments")
+        return None    
+    sw = switch_addresses[num]
+    if num in range(4):
+        sw_bus(OUT)
+    else:
+        sw_bus(IN)
+    bus.write_byte_data(sw, reg, dat)
+
+def swr(num, reg):
+    # outputs are 0-3, inputs are 4-7
+    switch_addresses = [0x48, 0x49, 0x4a, 0x4b, 0x48, 0x49, 0x4a, 0x4b]
+
+    r = range(8)
+    if not ((num in r) and reg in range(256)):
+        print("Wrong arguments")
+        return None    
+    if num in range(4):
+        sw_bus(OUT)
+    else:
+        sw_bus(IN) 
+    sw = switch_addresses[num]   
+    dat = bus.read_byte_data(sw, reg)
+    print('0x{:02x}'.format(dat))
+
 # main
+atexit.register(shutdown)
 init()
