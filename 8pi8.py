@@ -9,6 +9,7 @@ import pigpio
 import time
 from time import sleep
 import atexit
+import pickle
 
 #run sudo pigpiod in terminal for clock to work
 
@@ -1446,6 +1447,7 @@ def swinit(button):
     global pi
     swinit_status = not swinit_status
     if swinit_status:
+        print("Turning on 2.5V")
         # enable 2.5V switch power, soft reset (avoids toggling GPIO_RST#)
         pi.write(EN_2V5, 1)
         sleep(0.25)
@@ -1458,6 +1460,7 @@ def swinit(button):
         sw_bus(IN)
         for sw in sw_addr: bus.write_byte_data(sw, 0x00, 0x00)
         
+        print("Initializing switches")
         # Initialize switches driving SMA outputs, U40-U43
         sw_bus(OUT)
         
@@ -1499,6 +1502,7 @@ def swinit(button):
         button["text"] = "ON"
     else:
         sw_bus(NONE)
+        print("Turning off 2.5V")
         pi.write(EN_2V5, 0)
         button["text"] = "Init"
     
@@ -1561,7 +1565,7 @@ def sww(num, reg, dat):
         sw_bus(IN)
     bus.write_byte_data(sw, reg, dat)
 
-def swr(num, reg):
+def swr(num, reg, printit = True):
     # outputs are 0-3, inputs are 4-7
     switch_addresses = [0x48, 0x49, 0x4a, 0x4b, 0x48, 0x49, 0x4a, 0x4b]
 
@@ -1575,7 +1579,45 @@ def swr(num, reg):
         sw_bus(IN) 
     sw = switch_addresses[num]   
     dat = bus.read_byte_data(sw, reg)
-    print('0x{:02x}'.format(dat))
+    if printit: print('0x{:02x}'.format(dat))
+    return dat
+
+def swsave(filename):
+    # will write lists of [switch number, register address, register data] to file
+    regs_to_save = [0x23, 
+        0x80, 0x83, 0x84, 0x85, 0x88, 0x8b, 0x8c, 0x8d,
+        0x90, 0x93 ,0x94, 0x95, 0x98, 0x9b, 0x9c, 0x9d,
+        0xa0, 0xa3, 0xa4, 0xa5, 0xa8, 0xab, 0xac, 0xad,
+        0xb0, 0xb3, 0xb4, 0xb5, 0xb8, 0xbb, 0xbc, 0xbd,
+        0xc0, 0xc1, 0xc2, 0xc3, 0xc8, 0xc9, 0xca, 0xcb,
+        0xd0, 0xd1, 0xd2, 0xd3, 0xd8, 0xd9, 0xda, 0xdb,
+        0xe0, 0xe1, 0xe2, 0xe3, 0xe8, 0xe9, 0xea, 0xeb,
+        0xf0, 0xf1, 0xf2, 0xf3, 0xf8, 0xf9, 0xfa, 0xfb]
+    reglist = []
+
+    for num in range(8):
+        for reg in regs_to_save:
+            # save all config registers
+            reglist.append([num, reg, swr(num, reg, False)])
+        for i in range(8):
+            # check XPT Status regs for current mapping
+            inport = swr(num, 0x50 + i, False)
+            reglist.append([num, 0x40, (inport<<4) + i])
+            # add the update command for each port
+            reglist.append([num, 0x41, 0x01])
+    with open(filename, 'wb') as f:
+        pickle.dump(reglist, f)
+
+def swload(filename):
+    # load list of [switch number, register address, register data]
+    with open(filename, 'rb') as f:
+        reglist = pickle.load(f)
+
+    # update switches per config file
+    for item in reglist:
+        #print('writing switch {} reg 0x{:02x} data 0x{:02x}'.format(item[0], item[1], item[2]))
+        sww(item[0], item[1], item[2])
+
 
 # main
 atexit.register(shutdown)
