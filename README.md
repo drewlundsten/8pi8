@@ -19,8 +19,13 @@ Config your Pi:
 
 6) Useful Python command-line functions:
 > swr(num, reg) # read switch <num, 0-7> register <reg, 0x00-0xff>
+
 > sww(num, reg, dat) # write switch <num> register <reg> with data <dat, 0x00-0xff>
+
 > swdump(num) # dump register map of switch <num>
+
 > swmap(num, inport, outport) # update switch <num> with <inport, 0-7> mapped to <outport, 0-7>
+
 > swsave('./path/to/filename.xtn') # store all switch registers in <filename>
+
 > swload('./path/to/filename.xtn') # restore switch configuratoin from <filename>
